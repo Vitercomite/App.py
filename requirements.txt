@@ -1,0 +1,12 @@
+streamlit
+google-generativeai
+fpdf2
+matplotlib
+python-dotenv
+Pillow
+pandas
+plotly
+gspread
+google-auth
+openpyxl
+requests
