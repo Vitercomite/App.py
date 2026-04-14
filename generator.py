@@ -571,4 +571,17 @@ Versão em PT e EN."""
             pdf.multi_cell(0, 6, safe_text(next_steps_manual))
             pdf.ln(3)
 
-        pdf.ln(
+         pdf.ln(6)
+        pdf.set_draw_color(10, 60, 20)
+        pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+        pdf.ln(4)
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.cell(0, 6, safe_text("Vitor Emílio Quirino  |  Técnico de Mecatrônica  |  Dürr Brasil"), align="C", ln=True)
+        pdf.set_font("Helvetica", "I", 9)
+        pdf.set_text_color(80, 80, 80)
+        pdf.cell(0, 5, safe_text("Futuro Engenheiro Mecânico - Poli-USP  |  Em rota para Bietigheim-Bissingen"), align="C", ln=True)
+
+        safe_cliente = str(cliente).replace(" ", "_").replace("/", "_").replace("\\", "_")
+        pdf_path = f"RDP_{str(data).replace('-', '')}_{safe_cliente}.pdf"
+        pdf.output(pdf_path)
+        return pdf_path
