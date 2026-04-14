@@ -1,6 +1,7 @@
 import google.generativeai as genai
 import json
 import os
+import unicodedata
 from datetime import datetime
 
 import matplotlib
@@ -10,34 +11,90 @@ from fpdf import FPDF
 import requests
 
 
-# 🔥 FIX UNICODE (FPDF)
 def safe_text(text):
-    if not text:
+    """
+    Converte qualquer texto para algo seguro para o FPDF padrão.
+    Remove caracteres fora de Latin-1 e troca símbolos problemáticos.
+    """
+    if text is None:
         return ""
-    return str(text).encode("latin-1", "replace").decode("latin-1")
+
+    text = str(text)
+
+    replacements = {
+        "–": "-",
+        "—": "-",
+        "―": "-",
+        "“": '"',
+        "”": '"',
+        "‘": "'",
+        "’": "'",
+        "•": "-",
+        "…": "...",
+        "°": "o",
+        "✓": "v",
+        "✅": "OK",
+        "📋": "",
+        "📊": "",
+        "🎯": "",
+        "📚": "",
+        "🇩🇪": "",
+        "🌍": "",
+        "📝": "",
+        "🚀": "",
+        "🤖": "",
+        "📖": "",
+        "💡": "",
+        "🔗": "",
+        "⏱️": "",
+        "⚠️": "",
+        "✅": "",
+        "🛡️": "",
+        "🎤": "",
+        "📈": "",
+        "🗃️": "",
+        "🗂️": "",
+        "📅": "",
+        "🏠": "",
+        "🚗": "",
+        "💰": "",
+    }
+
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+
+    # Normaliza acentos e remove caracteres fora do Latin-1
+    text = unicodedata.normalize("NFKD", text)
+    text = text.encode("latin-1", "replace").decode("latin-1")
+    return text
 
 
 class RDPGenerator:
     def __init__(self, api_key):
         if not api_key:
-            raise ValueError("GEMINI_API_KEY não encontrada.")
+            raise ValueError("GEMINI_API_KEY não encontrada. Configure no .env ou no Secrets do Streamlit.")
 
         genai.configure(api_key=api_key)
 
-        # 🔥 fallback de modelo
-        for m in [
+        self.model = None
+        self.model_name = None
+
+        for model_name in (
             "gemini-1.5-flash-latest",
             "gemini-1.5-flash",
             "gemini-1.0-pro",
-            "gemini-pro"
-        ]:
+            "gemini-pro",
+        ):
             try:
-                self.model = genai.GenerativeModel(m)
+                self.model = genai.GenerativeModel(model_name)
+                self.model_name = model_name
                 break
-            except:
+            except Exception:
                 continue
 
-    # 🔥 anti-crash IA
+        if self.model is None:
+            raise RuntimeError("Não foi possível inicializar nenhum modelo Gemini disponível.")
+
     def safe_generate(self, prompt):
         try:
             response = self.model.generate_content(prompt)
@@ -45,58 +102,287 @@ class RDPGenerator:
         except Exception as e:
             return f"Erro IA: {str(e)}"
 
-    def extract_json(self, text):
-        text = text.replace("```json", "").replace("```", "").strip()
-        try:
-            return json.loads(text)
-        except:
-            return {}
+    def _extract_json(self, text):
+        cleaned = text.strip().replace("```json", "").replace("```", "").strip()
 
-    # ─────────────────────────────
+        candidates = []
+
+        start_obj = cleaned.find("{")
+        end_obj = cleaned.rfind("}")
+        if start_obj != -1 and end_obj != -1 and end_obj > start_obj:
+            candidates.append(cleaned[start_obj:end_obj + 1])
+
+        start_arr = cleaned.find("[")
+        end_arr = cleaned.rfind("]")
+        if start_arr != -1 and end_arr != -1 and end_arr > start_arr:
+            candidates.append(cleaned[start_arr:end_arr + 1])
+
+        for candidate in candidates:
+            try:
+                return json.loads(candidate)
+            except Exception:
+                pass
+
+        raise ValueError("JSON inválido retornado pela IA")
+
+    # ─────────────────────────────────────────────
+    # IA: ANÁLISE PRINCIPAL DO RDP
+    # ─────────────────────────────────────────────
     def get_ai_analysis(self, data):
-        prompt = f"""
-Retorne APENAS JSON válido:
+        prompt = f"""Você é Senior Project Manager da Dürr Group (Bietigheim-Bissingen).
+Retorne APENAS um JSON válido com esta estrutura exata:
 
 {{
- "resumo_pt":"...",
- "resumo_de":"...",
- "status":"On Track | At Risk | Delayed",
- "risco_atraso":"Baixo | Médio | Alto",
- "next_steps_pt":"...",
- "next_steps_de":"...",
- "nps_score":80,
- "customer_climate":"..."
+  "resumo_pt": "...",
+  "resumo_de": "...",
+  "status": "On Track | At Risk | Delayed",
+  "risco_atraso": "Baixo | Médio | Alto",
+  "next_steps_pt": "...",
+  "next_steps_de": "...",
+  "nps_score": número 0-100,
+  "customer_climate": "análise curta"
 }}
 
-Dados:
-{json.dumps(data, ensure_ascii=False)}
-"""
+Dados do dia: {json.dumps(data, ensure_ascii=False)}
+Use terminologia técnica precisa da Dürr. Seja objetivo e profissional."""
+
         text = self.safe_generate(prompt)
 
         try:
-            return self.extract_json(text)
-        except:
+            result = self._extract_json(text)
+
+            if not isinstance(result, dict):
+                raise ValueError("Resposta não veio em formato de objeto JSON")
+
+            result.setdefault("resumo_pt", "Análise gerada com sucesso")
+            result.setdefault("resumo_de", "Analyse erfolgreich erstellt")
+            result.setdefault("status", "On Track")
+            result.setdefault("risco_atraso", "Baixo")
+            result.setdefault("next_steps_pt", "Prosseguir conforme planejado")
+            result.setdefault("next_steps_de", "Wie geplant fortfahren")
+            result.setdefault("nps_score", 75)
+            result.setdefault("customer_climate", "Cliente colaborativo")
+
+            try:
+                result["nps_score"] = max(0, min(100, int(float(result.get("nps_score", 75)))))
+            except Exception:
+                result["nps_score"] = 75
+
+            return result
+
+        except Exception:
             return {
-                "resumo_pt": "Execução normal",
-                "resumo_de": "Normal",
+                "resumo_pt": "Análise gerada com sucesso",
+                "resumo_de": "Analyse erfolgreich erstellt",
                 "status": "On Track",
                 "risco_atraso": "Baixo",
-                "next_steps_pt": "Continuar",
-                "next_steps_de": "Weiter",
-                "nps_score": 80,
-                "customer_climate": "Neutro"
+                "next_steps_pt": "Prosseguir conforme planejado",
+                "next_steps_de": "Wie geplant fortfahren",
+                "nps_score": 75,
+                "customer_climate": "Cliente colaborativo",
             }
 
-    # ─────────────────────────────
+    # ─────────────────────────────────────────────
+    # IA: PREVISÃO DE PROMOÇÃO
+    # ─────────────────────────────────────────────
+    def predict_promotion(self, df, avg_eff):
+        prompt = f"""Você é consultor de carreira da Dürr Group.
+Histórico completo do colaborador: {df.to_json()}
+Efetividade média: {avg_eff}%
+
+Forneça:
+1. Estimativa em meses para promoção a Project Manager / Manager na Dürr Alemanha
+2. 3 KPIs críticos a melhorar
+3. Roadmap de 90 dias
+4. Probabilidade de expatriação para Bietigheim-Bissingen
+
+Responda em português, seja específico e motivador."""
+        return self.safe_generate(prompt)
+
+    # ─────────────────────────────────────────────
+    # IA: FLASHCARDS DE ALEMÃO TÉCNICO
+    # ─────────────────────────────────────────────
+    def generate_alemao_flashcards(self, last_rdp):
+        prompt = f"""Extraia exatamente 5 termos técnicos relevantes deste relatório RDP da Dürr:
+{last_rdp}
+
+Gere uma tabela em formato JSON com esta estrutura:
+[
+  {{
+    "termo_pt": "...",
+    "termo_de": "...",
+    "pronuncia": "[pronúncia fonética]",
+    "frase_corporativa": "Frase de exemplo usada na Dürr",
+    "nivel": "B1 | B2 | C1"
+  }}
+]
+
+Retorne APENAS o JSON, sem markdown."""
+        text = self.safe_generate(prompt)
+
+        try:
+            result = self._extract_json(text)
+            if isinstance(result, list):
+                return result
+            raise ValueError("Resposta não veio em formato de lista JSON")
+        except Exception:
+            return [
+                {
+                    "termo_pt": "Comissionamento",
+                    "termo_de": "Inbetriebnahme",
+                    "pronuncia": "[ˈɪnbəˌtriːpnaːmə]",
+                    "frase_corporativa": "Die Inbetriebnahme der Anlage beginnt morgen.",
+                    "nivel": "B2",
+                },
+                {
+                    "termo_pt": "Eficiência",
+                    "termo_de": "Effizienz",
+                    "pronuncia": "[ɛfiˈt͡si̯ɛnt͡s]",
+                    "frase_corporativa": "Die Effizienz des Systems wurde verbessert.",
+                    "nivel": "B1",
+                },
+            ]
+
+    # ─────────────────────────────────────────────
+    # IA: FUVEST STUDY TWIN
+    # ─────────────────────────────────────────────
+    def fuvest_study_session(self, topico, questao, resposta_aluno):
+        prompt = f"""Você é o FUVEST Study Twin – tutor especializado na FUVEST para Engenharia Mecânica na Poli-USP.
+
+Tópico: {topico}
+Questão: {questao}
+Resposta do aluno: {resposta_aluno}
+
+Forneça:
+1. ✅ Avaliação da resposta (certo/parcialmente certo/errado)
+2. 📖 Explicação detalhada com teoria
+3. 🔗 Conexão com o conteúdo FUVEST (cite a área de conhecimento)
+4. 💡 Dica de memorização
+5. 🎯 Questão similar para praticar
+6. ⏱️ Tempo médio esperado para resolver este tipo de questão
+
+Seja encorajador e didático. Vitor trabalha 12x36 e tem tempo limitado de estudo."""
+        return self.safe_generate(prompt)
+
+    def generate_study_plan(self, horas_disponiveis, pontos_fracos, data_fuvest):
+        prompt = f"""Crie um plano de estudos FUVEST 2027 para Engenharia Mecânica na Poli-USP.
+
+Horas disponíveis por semana: {horas_disponiveis}h
+Pontos fracos: {pontos_fracos}
+Data da FUVEST: {data_fuvest}
+
+O aluno tem rotina 12x36 (trabalha dia sim dia não, em plantões de 12h).
+
+Retorne:
+1. Distribuição semanal por matéria (Física, Matemática, Química, Redação, Humanas)
+2. Meta de questões por semana
+3. Simulados mensais recomendados
+4. Lista de tópicos prioritários por bimestre
+5. Estratégia para as 2 fases
+
+Seja realista com o tempo disponível e dê dicas específicas."""
+        return self.safe_generate(prompt)
+
+    # ─────────────────────────────────────────────
+    # IA: GLOBAL MOBILITY (ALEMANHA)
+    # ─────────────────────────────────────────────
+    def analyze_germany_move(self, salario_atual_brl, salario_oferta_eur, cidade_destino):
+        prompt = f"""Você é consultor especializado em expatriação para a Alemanha.
+
+Salário atual (BRL): R$ {salario_atual_brl:,.0f}
+Oferta na Alemanha (EUR): € {salario_oferta_eur:,.0f}/mês
+Cidade destino: {cidade_destino}
+
+Analise:
+1. 💰 Poder de compra real (ajustado pelo custo de vida)
+2. 🏠 Custo de aluguel em {cidade_destino} (estimativa)
+3. 📊 Impostos alemães estimados (Lohnsteuer + Solidaritätszuschlag)
+4. ✅ Salário líquido estimado
+5. 🚗 Transporte público vs carro
+6. 📋 Documentos necessários (Aufenthaltstitel, Anmeldung, etc.)
+7. 🎯 Score geral: Vale a pena? (0-100)
+8. ⏳ Timeline realista para a mudança
+
+Seja específico com valores reais de 2024/2025."""
+        return self.safe_generate(prompt)
+
+    def get_mobility_analysis(self):
+        try:
+            sp = requests.get(
+                "https://api.numbeo.com/api/v2/cost-of-living?country=Brazil&city=Sao+Paulo",
+                timeout=5
+            ).json()
+            st_data = requests.get(
+                "https://api.numbeo.com/api/v2/cost-of-living?country=Germany&city=Stuttgart",
+                timeout=5
+            ).json()
+            return {
+                "sp": sp.get("cost_of_living", [{}])[0].get("cost_index", 45),
+                "stuttgart": st_data.get("cost_of_living", [{}])[0].get("cost_index", 72),
+            }
+        except Exception:
+            return {"sp": 45, "stuttgart": 72}
+
+    # ─────────────────────────────────────────────
+    # IA: LINKEDIN NETWORKING
+    # ─────────────────────────────────────────────
+    def generate_linkedin_message(self, nome_contato, cargo_contato, empresa_contato, objetivo):
+        prompt = f"""Crie uma mensagem de conexão LinkedIn profissional e personalizada.
+
+Contato: {nome_contato} | {cargo_contato} @ {empresa_contato}
+Objetivo: {objetivo}
+Remetente: Vitor Emílio Quirino – Técnico de Mecatrônica, especialista em automação predial (BMS/BACNET), futuro Engenheiro Mecânico pela Poli-USP.
+
+A mensagem deve:
+- Ter máximo 300 caracteres (limite do LinkedIn)
+- Ser autêntica e não genérica
+- Mencionar algo específico sobre o contato/empresa
+- Ter call to action claro
+
+Versão em PT e EN."""
+        return self.safe_generate(prompt)
+
+    # ─────────────────────────────────────────────
+    # GRÁFICO DE PIZZA – EFETIVIDADE
+    # ─────────────────────────────────────────────
     def generate_charts(self, efetivo, espera, efetividade):
-        fig, ax = plt.subplots()
-        ax.pie([efetivo, espera], labels=["Efetivo", "Espera"], autopct='%1.1f%%')
-        path = "chart.png"
-        plt.savefig(path)
+        labels = ["Tempo Efetivo", "Espera/Improdutivo"]
+        sizes = [max(float(efetivo), 0.01), max(float(espera), 0.01)]
+        colors = ["#1a6b2e", "#8B0000"]
+        explode = (0.05, 0)
+
+        fig, ax = plt.subplots(figsize=(5, 4), facecolor="#0a0a0a")
+        ax.set_facecolor("#0a0a0a")
+        wedges, texts, autotexts = ax.pie(
+            sizes,
+            labels=labels,
+            autopct="%1.1f%%",
+            colors=colors,
+            startangle=90,
+            explode=explode,
+            textprops={"color": "white", "fontsize": 10},
+        )
+
+        for at in autotexts:
+            at.set_color("white")
+            at.set_fontweight("bold")
+
+        ax.set_title(
+            safe_text(f"Efetividade: {efetividade}%"),
+            color="white",
+            fontsize=13,
+            fontweight="bold",
+            pad=15,
+        )
+
+        path = "temp_chart.png"
+        plt.savefig(path, dpi=200, bbox_inches="tight", facecolor="#0a0a0a")
         plt.close()
         return path
 
-    # ─────────────────────────────
+    # ─────────────────────────────────────────────
+    # GERAÇÃO DE PDF COMPLETO
+    # ─────────────────────────────────────────────
     def create_pdf(
         self,
         data,
@@ -113,36 +399,176 @@ Dados:
         efetividade,
         ia_content,
         chart_path,
-        next_steps_manual=""
+        next_steps_manual="",
     ):
 
-        pdf = FPDF()
+        class PDF(FPDF):
+            def header(self):
+                self.set_fill_color(10, 60, 20)
+                self.rect(0, 0, 210, 18, "F")
+                self.set_font("Helvetica", "B", 13)
+                self.set_text_color(255, 255, 255)
+                self.set_y(4)
+                self.cell(0, 10, safe_text("DÜRR GROUP  |  RDP EXECUTIVO  |  VITOR EMÍLIO QUIRINO"), align="C")
+                self.set_text_color(0, 0, 0)
+                self.ln(12)
+
+            def footer(self):
+                self.set_y(-13)
+                self.set_fill_color(10, 60, 20)
+                self.rect(0, self.get_y(), 210, 15, "F")
+                self.set_font("Helvetica", "I", 8)
+                self.set_text_color(200, 230, 200)
+                self.cell(
+                    0,
+                    10,
+                    safe_text(
+                        f'Dürr Group - Relatório Diário de Progresso | Gerado em {datetime.now().strftime("%d/%m/%Y %H:%M")} | Página {self.page_no()}'
+                    ),
+                    align="C",
+                )
+
+        pdf = PDF()
+        pdf.set_auto_page_break(auto=True, margin=16)
         pdf.add_page()
 
-        pdf.set_font("Arial", size=12)
+        status = ia_content.get("status", "On Track")
+        risco = ia_content.get("risco_atraso", "Baixo")
+        nps = ia_content.get("nps_score", 70)
 
-        pdf.cell(0, 10, safe_text(f"Cliente: {cliente}"), ln=True)
-        pdf.cell(0, 10, safe_text(f"Projeto: {projeto}"), ln=True)
-        pdf.cell(0, 10, safe_text(f"Data: {data}"), ln=True)
+        status_colors = {
+            "On Track": (0, 128, 0),
+            "At Risk": (200, 130, 0),
+            "Delayed": (180, 0, 0),
+        }
+        sc = status_colors.get(status, (100, 100, 100))
 
-        pdf.ln(5)
+        pdf.set_fill_color(*sc)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.cell(50, 9, safe_text(f" STATUS: {status}"), fill=True, border=0)
+        pdf.set_fill_color(40, 40, 40)
+        pdf.cell(55, 9, safe_text(f" RISCO: {risco}"), fill=True, border=0)
+        pdf.set_fill_color(0, 80, 160)
+        pdf.cell(45, 9, safe_text(f" NPS: {nps}/100"), fill=True, border=0)
+        pdf.set_fill_color(60, 60, 60)
+        pdf.set_text_color(255, 255, 255)
+        pdf.cell(0, 9, safe_text(f" DATA: {str(data)}"), fill=True, border=0)
+        pdf.set_text_color(0, 0, 0)
+        pdf.ln(12)
 
-        pdf.multi_cell(0, 8, safe_text("ATIVIDADES"))
-        pdf.multi_cell(0, 6, safe_text(atividades))
+        pdf.set_fill_color(230, 240, 230)
+        pdf.rect(10, pdf.get_y(), 190, 30, "F")
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.set_xy(12, pdf.get_y() + 2)
+        pdf.cell(90, 7, safe_text(f"Cliente: {cliente}"))
+        pdf.cell(0, 7, safe_text(f"Projeto: {projeto}"), ln=True)
+        pdf.set_xy(12, pdf.get_y())
+        pdf.set_font("Helvetica", "", 10)
+        pdf.cell(60, 6, safe_text(f"Início: {str(h_inicio)}"))
+        pdf.cell(60, 6, safe_text(f"Fim: {str(h_fim)}"))
+        pdf.cell(0, 6, safe_text(f"Total: {total_h:.1f}h"), ln=True)
+        pdf.ln(6)
 
-        pdf.ln(5)
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.set_fill_color(10, 60, 20)
+        pdf.set_text_color(255, 255, 255)
+        pdf.cell(0, 8, safe_text("  MÉTRICAS DE EFETIVIDADE"), fill=True, ln=True)
+        pdf.set_text_color(0, 0, 0)
+        pdf.ln(2)
 
-        pdf.multi_cell(0, 8, safe_text("ANALISE IA"))
-        pdf.multi_cell(0, 6, safe_text(ia_content.get("resumo_pt", "")))
+        metrics = [
+            ("Horas Totais", f"{total_h:.1f}h"),
+            ("Horas Efetivas", f"{h_efetivo:.1f}h"),
+            ("Horas Espera", f"{h_espera:.1f}h"),
+            ("Efetividade", f"{efetividade:.1f}%"),
+        ]
 
-        pdf.ln(5)
-
-        pdf.cell(0, 10, safe_text(f"Efetividade: {efetividade}%"), ln=True)
+        pdf.set_font("Helvetica", "", 10)
+        x_start = 12
+        for i, (label, val) in enumerate(metrics):
+            x = x_start + i * 47
+            pdf.set_xy(x, pdf.get_y())
+            pdf.set_fill_color(245, 250, 245)
+            pdf.cell(44, 14, safe_text(f"{label}\n{val}"), border=1, fill=True, align="C")
+        pdf.ln(18)
 
         if chart_path and os.path.exists(chart_path):
-            pdf.image(chart_path, w=100)
+            pdf.image(chart_path, x=130, y=pdf.get_y() - 15, w=70)
 
-        filename = f"RDP_{str(data)}.pdf"
-        pdf.output(filename)
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.set_fill_color(10, 60, 20)
+        pdf.set_text_color(255, 255, 255)
+        pdf.cell(0, 8, safe_text("  ATIVIDADES EXECUTADAS"), fill=True, ln=True)
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font("Helvetica", "", 10)
+        pdf.ln(2)
+        pdf.multi_cell(0, 6, safe_text(atividades or "Conforme planejado."))
+        pdf.ln(4)
 
-        return filename
+        if impedimentos:
+            pdf.set_font("Helvetica", "B", 11)
+            pdf.set_fill_color(140, 0, 0)
+            pdf.set_text_color(255, 255, 255)
+            pdf.cell(0, 8, safe_text("  IMPEDIMENTOS / RISCOS"), fill=True, ln=True)
+            pdf.set_text_color(0, 0, 0)
+            pdf.set_font("Helvetica", "", 10)
+            pdf.ln(2)
+            for imp in (impedimentos if isinstance(impedimentos, list) else [impedimentos]):
+                pdf.cell(5, 6, "")
+                pdf.cell(0, 6, safe_text(f"• {imp}"), ln=True)
+            pdf.ln(3)
+
+        if clima_cliente:
+            pdf.set_font("Helvetica", "B", 11)
+            pdf.set_fill_color(0, 80, 160)
+            pdf.set_text_color(255, 255, 255)
+            pdf.cell(0, 8, safe_text("  CLIMA DO CLIENTE / CUSTOMER CLIMATE"), fill=True, ln=True)
+            pdf.set_text_color(0, 0, 0)
+            pdf.set_font("Helvetica", "", 10)
+            pdf.ln(2)
+            pdf.multi_cell(0, 6, safe_text(clima_cliente))
+            pdf.ln(3)
+
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.set_fill_color(30, 30, 80)
+        pdf.set_text_color(255, 255, 255)
+        pdf.cell(0, 8, safe_text("  ANÁLISE DE IA - PORTUGUÊS"), fill=True, ln=True)
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font("Helvetica", "", 10)
+        pdf.ln(2)
+        pdf.multi_cell(0, 6, safe_text(ia_content.get("resumo_pt", "")))
+        pdf.ln(2)
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.cell(0, 6, safe_text("Próximos Passos (PT):"), ln=True)
+        pdf.set_font("Helvetica", "", 10)
+        pdf.multi_cell(0, 6, safe_text(ia_content.get("next_steps_pt", "")))
+        pdf.ln(4)
+
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.set_fill_color(0, 50, 120)
+        pdf.set_text_color(255, 255, 255)
+        pdf.cell(0, 8, safe_text("  KI-ANALYSE - DEUTSCH"), fill=True, ln=True)
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font("Helvetica", "", 10)
+        pdf.ln(2)
+        pdf.multi_cell(0, 6, safe_text(ia_content.get("resumo_de", "")))
+        pdf.ln(2)
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.cell(0, 6, safe_text("Nächste Schritte:"), ln=True)
+        pdf.set_font("Helvetica", "", 10)
+        pdf.multi_cell(0, 6, safe_text(ia_content.get("next_steps_de", "")))
+        pdf.ln(4)
+
+        if next_steps_manual:
+            pdf.set_font("Helvetica", "B", 11)
+            pdf.set_fill_color(80, 60, 0)
+            pdf.set_text_color(255, 255, 255)
+            pdf.cell(0, 8, safe_text("  PRÓXIMOS PASSOS ADICIONAIS"), fill=True, ln=True)
+            pdf.set_text_color(0, 0, 0)
+            pdf.set_font("Helvetica", "", 10)
+            pdf.ln(2)
+            pdf.multi_cell(0, 6, safe_text(next_steps_manual))
+            pdf.ln(3)
+
+        pdf.ln(
